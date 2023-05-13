@@ -1,0 +1,609 @@
+---
+title: "Predicting house prices of Ames, Iowa"
+author: "Meilin Pan"
+date: "2023-03-20"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: show
+  word_document:
+    toc: yes
+subtitle: PSTAT 131 Final Project
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The goal of this project is to build a machine learning model to predict the sale price of houses in Ames, Iowa. I will be using the Ames Housing data set from Kaggle, which was compiled by Dean De Cock for use in data science education, and implementing multiple techniques to yield the most accurate model for this regression problem.
+
+## Loading Packages and Data
+
+```{r pressure, echo=FALSE}
+library(tidymodels)
+library(ISLR)
+library(ISLR2)
+library(tidyverse)
+library(glmnet)
+library(modeldata)
+library(ggthemes)
+library(janitor) 
+library(naniar) 
+library(corrplot) 
+library(patchwork) 
+library(rpart.plot)
+library(discrim)  
+library(corrr)   
+library(knitr)  
+library(MASS)    
+library(ggplot2)  
+library(ggrepel)
+library(ggimage)
+library(vip)         
+library(vembedr)     
+library(randomForest)   
+library(stringr)   
+library(dplyr)    
+library(yardstick) 
+library(readr)
+library(kknn)
+library(poissonreg)
+library(xgboost)
+library(ranger)
+library(tidytext)
+library(modeldata)
+library(ggthemes)
+library(themis) 
+#Assigning the data to a variable
+tidymodels_prefer()
+Ames <- read.csv("/Users/meilinpan/Desktop/pstat131/FinalProject/HP/train.csv")
+set.seed(2000)
+```
+
+## Exploring and Tidying the Raw Data
+
+```{r}
+Ames <- clean_names(Ames)
+head(Ames)
+dim(Ames)
+```
+
+The data set contains 1460 observations and 81 columns, indicating that we have 80 predictor variables. In the following steps, I will eliminate the predictor variables that don't contribute to the prediction of my response variable, sale_price.
+
+## Exploratory Data Analysis
+
+### Missing Data
+
+```{r}
+Ames %>% 
+  summary()
+vis_miss(Ames)
+```
+
+We can see that there are a few variables with over 50% of missing values, so we will be dropping them later in the variable selection step.
+
+## Visual EDA 
+
+### Sale Price
+
+```{r}
+Ames %>% 
+  ggplot(aes(x = sale_price)) +
+  geom_histogram(bins = 50) +
+  geom_vline(xintercept = min(Ames$sale_price),color='red',linetype='dashed')+
+  scale_x_continuous(labels=dollar_format())+
+  labs(title = "Sale Price shows a Right Skewed Distribution")+
+  theme_bw()
+```
+
+From the histogram, we can see the sale price has a right-skewed normal distribution with a few ouliers with very high values. Therefore, we can do a log transformation on it. 
+
+### Correlation Plot
+
+```{r}
+Ames %>%  # getting just the numeric data
+  select(where(is.numeric)) %>%
+  cor(use = "pairwise.complete.obs") %>%
+  corrplot(type='lower',diag = FALSE)
+```
+
+From the correlation plot, we spotted some variables with high correlations with each other,and some variables with very low correlation to our response variable, sale price.
+
+After our data exploration, we are dropping quite a few variables.
+
+Variables to Drop:
+
+1.  Having missing values of over 50%: alley fireplace_qu pool_qc pool_area fence misc_feature misc_val mas_vnr_type mas_vnr_area
+
+2.  Multicoliearity features: For each pair, we will be dropping the one with lower correlation with the response variable, sale_price.
+
+```{=html}
+<!-- -->
+```
+(1) x1st_flr_sf and total_bsmt_sf dropping x1st_flr_sf
+
+(2) tot_rms_abv_grd and gr_liv_area dropping tot_rms_abv_grd
+
+(3) garage_yr_blt and year_built dropping garage_yr_blt
+
+(4) garage_cars and garage_area dropping garage_area
+
+```{=html}
+<!-- -->
+```
+3.  Variables with poor correlation to the response variable, sale_price: id ms_sub_class lot_frontage lot_area overall_cond bsmt_fin_sf1 bsmt_fin_sf2 bsmt_unf_sf x2nd_flr_sf low_qual_fin_sf bsmt_full_bath bsmt_half_bath half_bath bedroom_abv_gr kitchen_abv_gr wood_deck_sf open_porch_sf enclosed_porch x3ssn_porch screen_porch mo_sold yr_sold year_remod_add
+
+4.For categorical variables with multiple levels, we will be dropping variables with more than 85% observations in one level. Which include: street land_contour utilities land_slope condition1 condition2 bldg_type roof_matl exter_cond bsmt_cond bsmt_fin_type2 heating central_air electrical functional garage_qual garage_cond paved_drive sale_type
+
+```{r}
+ames <- Ames %>% select(-c('alley','fireplace_qu','pool_qc','pool_area','fence','misc_feature','misc_val','x1st_flr_sf','tot_rms_abv_grd','garage_yr_blt','garage_area','id','ms_sub_class','lot_frontage','lot_area','overall_cond','bsmt_fin_sf1','bsmt_fin_sf2','bsmt_unf_sf','x2nd_flr_sf','low_qual_fin_sf','bsmt_full_bath','bsmt_half_bath','half_bath','bedroom_abv_gr','kitchen_abv_gr','wood_deck_sf','open_porch_sf','enclosed_porch','x3ssn_porch','screen_porch','mo_sold','yr_sold','street','land_contour','utilities','land_slope','condition1','condition2','bldg_type','roof_matl','exter_cond','bsmt_cond','bsmt_fin_type2','heating','central_air','electrical','functional','garage_qual','garage_cond','paved_drive','sale_type','year_remod_add','mas_vnr_type', 'mas_vnr_area'))
+vis_miss(ames)
+sum(is.na(ames))
+ames<- ames %>% drop_na()
+```
+
+Now our dataset is much cleaner.
+
+```{r}
+ames_num1 <- ames %>%  # getting just the numeric data
+  select(where(is.numeric)) %>%
+  cor(use = "pairwise.complete.obs") %>%
+  corrplot(type='lower',diag = FALSE,method = 'circle',addCoef.col = 1)
+```
+
+Now we only have 7 numeric variables. 
+
+### Outliers
+
+```{r}
+#scatter plot of variables with high correlation to sale price
+p1<-ggplot(ames, aes(x=overall_qual, y=sale_price)) + geom_point()
+p2<-ggplot(ames, aes(x=year_built, y=sale_price)) + geom_point()
+p3<-ggplot(ames, aes(x=total_bsmt_sf, y=sale_price)) + geom_point()
+p4<-ggplot(ames, aes(x=gr_liv_area, y=sale_price)) +geom_point()
+p5<-ggplot(ames, aes(x=full_bath, y=sale_price)) + geom_point()
+p6<-ggplot(ames, aes(x=fireplaces, y=sale_price)) + geom_point()
+p7<-ggplot(ames, aes(x=garage_cars, y=sale_price)) + geom_point()
+grid.arrange(p1, p2,p3,p4,p5,p6,p7, nrow = 2)
+```
+
+From the scatter plots of the numeric variables with high correlation to the response variable, sale_price, we can see that there exist outliers that don't represent the overall trend of the data, so we will be handling the outliers by removing them. 
+
+
+####removing outliers
+
+```{r}
+#overall_qual
+Q1 <- quantile(ames$overall_qual, probs=c(.25, .75), na.rm = FALSE)
+iqr1 <- IQR(ames$overall_qual)
+ames1<- subset(ames, ames$overall_qual > (Q1[1] - 1.5*iqr1) & ames$overall_qual < (Q1[2]+1.5*iqr1))
+#year_built
+Q2 <- quantile(ames1$year_built, probs=c(.25, .75), na.rm = FALSE)
+iqr2 <- IQR(ames1$year_built)
+ames2<- subset(ames1, ames1$year_built > (Q2[1] - 1.5*iqr2) & ames1$year_built < (Q2[2]+1.5*iqr2))
+#total_bsmt_sf
+Q4 <- quantile(ames2$total_bsmt_sf, probs=c(.25, .75), na.rm = FALSE)
+iqr4 <- IQR(ames2$total_bsmt_sf)
+ames4<- subset(ames2, ames2$total_bsmt_sf > (Q4[1] - 1.5*iqr4) & ames2$total_bsmt_sf < (Q4[2]+1.5*iqr4))
+#gr_liv_area
+Q5 <- quantile(ames4$gr_liv_area, probs=c(.25, .75), na.rm = FALSE)
+iqr5 <- IQR(ames4$gr_liv_area)
+ames5<- subset(ames4, ames4$gr_liv_area > (Q5[1] - 1.5*iqr5) & ames4$gr_liv_area < (Q5[2]+1.5*iqr5))
+#full_bath
+Q6 <- quantile(ames5$full_bath, probs=c(.25, .75), na.rm = FALSE)
+iqr6 <- IQR(ames5$full_bath)
+ames6<- subset(ames5, ames5$full_bath > (Q6[1] - 1.5*iqr6) & ames5$full_bath < (Q6[2]+1.5*iqr6))
+#fireplaces
+Q7 <- quantile(ames6$fireplaces, probs=c(.25, .75), na.rm = FALSE)
+iqr7 <- IQR(ames6$fireplaces)
+ames7<- subset(ames6, ames6$fireplaces > (Q7[1] - 1.5*iqr7) & ames6$fireplaces < (Q7[2]+1.5*iqr7))
+#garage_cars
+Q8 <- quantile(ames7$garage_cars, probs=c(.25, .75), na.rm = FALSE)
+iqr8 <- IQR(ames7$garage_cars)
+ames8 <- subset(ames7, ames7$garage_cars > (Q8[1] - 1.5*iqr8) & ames7$garage_cars < (Q8[2]+1.5*iqr8))
+```
+
+```{r}
+#after removing the outliers
+p11<-ggplot(ames8, aes(x=overall_qual, y=sale_price)) + geom_point()
+p22<-ggplot(ames8, aes(x=year_built, y=sale_price)) + geom_point()
+p33<-ggplot(ames8, aes(x=total_bsmt_sf, y=sale_price)) + geom_point()
+p44<-ggplot(ames8, aes(x=gr_liv_area, y=sale_price)) +geom_point()
+p55<-ggplot(ames8, aes(x=full_bath, y=sale_price)) + geom_point()
+p66<-ggplot(ames8, aes(x=fireplaces, y=sale_price)) + geom_point()
+p77<-ggplot(ames8, aes(x=garage_cars, y=sale_price)) + geom_point()
+grid.arrange(p11, p22,p33,p44,p55,p66,p77, nrow = 2)
+```
+
+From the after scatter plot, we can no longer see outliers that might hugely impact the trend within the data.
+
+### Tidying categorical variables
+
+```{r}
+ames8 %>%
+  distinct(neighborhood) %>%
+  count()
+ames8 %>% 
+  ggplot(aes(y = forcats::fct_infreq(neighborhood))) +
+  geom_bar(fill='#003399') +
+  theme_base() +
+  ylab("Neighborhood")
+```
+
+For the neighborhood variable, it has 25 levels and most levels have a fair number of observations, so we will recode the neighborhood into regions according to the map of Ames, Iowa.
+
+![Ames Neighborhood](/Users/meilinpan/Desktop/pstat131/FinalProject/HP/AmesNeighborhood.png)
+
+```{r}
+library(forcats)
+ames9 <- ames8 %>%
+  mutate(region = forcats::fct_collapse(neighborhood,
+                                        west = c("SawyerW", "Sawyer", "ClearCr", "Edwards",
+                                                 "CollgCr","Crawfor", "SWISU", "Blueste",'Timber'),
+                                        north = c("NridgHt", "NoRidge", "Gilbert", "NWAmes",
+                                                      "Somerst", "Veenker", "Blmngtn", "BrkSide",
+                                                    "NPkVill",'BrDale','StoneBr','NAmes','OldTown',
+                                                  'IDOTRR'),
+                                        southeast = c("Mitchel", "MeadowV"))) %>%
+  select(-neighborhood)
+
+ames9 %>% 
+  ggplot(aes(y = forcats::fct_infreq(region))) +
+  geom_bar(fill='#003399') +
+  theme_base() +
+  ylab("Region")
+```
+
+### Barplots of unevenly distributed variables
+
+```{r}
+c1<-ames9 %>% ggplot(aes(x = ms_zoning)) + geom_bar()
+c2<-ames9 %>% ggplot(aes(x = lot_shape)) + geom_bar()
+c3<-ames9 %>% ggplot(aes(x = lot_config)) + geom_bar()
+c4<-ames9 %>% ggplot(aes(x = house_style)) + geom_bar()
+c5<-ames9 %>% ggplot(aes(x = roof_style)) + geom_bar()
+c6<-ames9 %>% ggplot(aes(x = exterior1st)) + geom_bar()
+c7<-ames9 %>% ggplot(aes(x = exterior2nd)) + geom_bar()
+c8<-ames9 %>% ggplot(aes(x = exter_qual)) + geom_bar()
+c9<-ames9 %>% ggplot(aes(x = foundation)) + geom_bar()
+c10<-ames9 %>% ggplot(aes(x = bsmt_qual)) + geom_bar()
+c11<-ames9 %>% ggplot(aes(x = heating_qc)) + geom_bar()
+c12<-ames9 %>% ggplot(aes(x = kitchen_qual)) + geom_bar()
+c13<-ames9 %>% ggplot(aes(x = garage_type)) + geom_bar()
+c14<-ames9 %>% ggplot(aes(x = sale_condition)) + geom_bar()
+grid.arrange(c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14, nrow = 3)
+```
+
+I notice some categorical variables have very few observations in certain levels (less than 5%), therefore, I will be combining the observations in those levels into one level named "other".
+
+```{r}
+#Changing categorical variables into factors
+ames9[sapply(ames9, is.character)] <- lapply(ames9[sapply(ames9, is.character)], as.factor)
+#Lumping levels of categorical variables with very few observations into one level
+ames9$ms_zoning <- ames9$ms_zoning %>% fct_lump_lowfreq()
+ames9$lot_shape <- ames9$lot_shape %>% fct_lump_lowfreq()
+ames9$lot_config <- ames9$lot_config %>% fct_lump_n(2)
+ames9$house_style<- ames9$house_style %>% fct_lump_n(3)
+ames9$roof_style <- ames9$roof_style %>% fct_lump_lowfreq()
+ames9$exterior1st<- ames9$exterior1st %>% fct_lump_n(5)
+ames9$exterior2nd<- ames9$exterior2nd %>% fct_lump_n(5)
+ames9$exter_qual <- ames9$exter_qual %>% fct_lump_lowfreq()
+ames9$foundation<- ames9$foundation %>%   fct_lump_n(2)
+ames9$bsmt_qual<- ames9$bsmt_qual %>%   fct_lump_n(2)
+ames9$heating_qc<- ames9$heating_qc %>%   fct_lump_n(3)
+ames9$kitchen_qual<- ames9$kitchen_qual%>%   fct_lump_n(2)
+ames9$garage_type<- ames9$garage_type%>%   fct_lump_n(2)
+ames9$sale_condition <- ames9$sale_condition %>%   fct_lump_lowfreq()
+```
+
+```{r}
+c11<-ames9 %>% ggplot(aes(x = ms_zoning)) + geom_bar()
+c22<-ames9 %>% ggplot(aes(x = lot_shape)) + geom_bar()
+c33<-ames9 %>% ggplot(aes(x = lot_config)) + geom_bar()
+c44<-ames9 %>% ggplot(aes(x = house_style)) + geom_bar()
+c55<-ames9 %>% ggplot(aes(x = roof_style)) + geom_bar()
+c66<-ames9 %>% ggplot(aes(x = exterior1st)) + geom_bar()
+c77<-ames9 %>% ggplot(aes(x = exterior2nd)) + geom_bar()
+c88<-ames9 %>% ggplot(aes(x = exter_qual)) + geom_bar()
+c99<-ames9 %>% ggplot(aes(x = foundation)) + geom_bar()
+c1010<-ames9 %>% ggplot(aes(x = bsmt_qual)) + geom_bar()
+c1111<-ames9 %>% ggplot(aes(x = heating_qc)) + geom_bar()
+c1212<-ames9 %>% ggplot(aes(x = kitchen_qual)) + geom_bar()
+c1313<-ames9 %>% ggplot(aes(x = garage_type)) + geom_bar()
+c1414<-ames9 %>% ggplot(aes(x = sale_condition)) + geom_bar()
+grid.arrange(c11,c22,c33,c44,c55,c66,c77,c88,c99,c1010,c1111,c1212,c1313,c1414, nrow = 4)
+```
+
+### Sale Price vs Overall Quality
+
+```{r}
+ames9 %>% 
+  ggplot(aes(x=overall_qual, y=sale_price)) + 
+  geom_jitter(width = 0.5, size = 1) +
+  geom_smooth(method = "lm", se =F, col="red") +
+  labs(title = "Sale Price vs. Overall Quality")
+```
+
+There is a very strong positive linear relationship between overall quality and sale price. A higher overall quality relates to a higher sale price. This makes sense intuitively because houses with higher quality is likely to be more expensive. 
+
+
+### Scatter Plot
+
+```{r}
+ames9 %>% 
+  ggplot(aes(x = year_built, y = sale_price, 
+             color = foundation)) +
+  geom_point() +
+  theme_minimal() +
+  labs(color = "foundation")
+```
+
+From the scatter plot, we can see that the newer the house, the higher the sale price. Also, the material for the foundation changes as the year built progresses. The material has higher quality as the year goes on. It changed from brittle, stone, slab, and wood, to cinder block, and finally to poured concrete. This also makes sense that the higher the quality of foundation materials, the higher the sale price. 
+
+### Relationships between predictors
+
+```{r}
+q1 <- ames9 %>% ggplot(aes(y = sale_price, fill = garage_type,
+                          x = factor(garage_cars))) +
+  stat_summary(fun = "mean", geom = "bar", 
+               position = "dodge") + theme_bw()
+q5 <- ames9 %>% ggplot(aes(y = region, fill = heating_qc,
+                          x = overall_qual)) +
+  stat_summary(fun = "mean", geom = "bar", 
+               position = "dodge") + theme_bw()
+q2 <- ames9 %>% ggplot(aes(x = overall_qual, fill = foundation)) +
+  geom_bar(position = "fill") + theme_bw()
+q6 <- ames9 %>% ggplot(aes(x = bsmt_fin_type1, fill = bsmt_qual)) +
+  geom_bar(position = "fill") + theme_bw()
+q3 <- ames9 %>% ggplot() +
+  geom_histogram(aes(x = year_built), fill = "red") + theme_bw()
+q4 <- ames9 %>% ggplot() +
+  geom_histogram(aes(x = gr_liv_area), fill = "blue") + theme_bw()
+q1 + q2 + q3 + q4 + q5+q6
+  plot_layout(ncol = 2)
+```
+
+Plot 1: The sale price increases as the car capacity of the garage increases, meanwhile, attached garage is the most common in most houses. Plot 2: Better quality of foundation material (Poured Concrete) is more likely to have a higher overall quality. Plot 3: More houses are built more recently. Plot 4: The distribution of above ground living area is approximately normal. Plot 5: The northern region of Ames has more higher quality houses, and better heating quality and condition result in higher overall quality. Plot 6: Basement finish type, good living quarters, has the most number of basement quality of good.
+
+### Garage Type
+
+```{r}
+ames9 %>% 
+  ggplot(aes(x = sale_price, y = reorder(garage_type, sale_price), fill = lot_config)) +
+  geom_boxplot() 
+```
+
+The trend that I noticed is houses with detached garages have lower sale prices.
+
+## Setting up Models
+
+### Data Split
+
+I used log transformation on the response variable, sale price, because from the histogram before, I noticed its skewness. Additionally, sale prices are mostly very large numbers and this will effect the evaluation of our model performance.
+
+```{r}
+set.seed(2000)
+ames9 <- ames9 %>% mutate(sale_price = log10(sale_price))
+ames_split <- initial_split(ames9,prop=0.7,strata=sale_price)
+ames_split
+ames_train <- training(ames_split)
+ames_test <- testing(ames_split)
+```
+
+### Recipe Creation
+
+We will be using the same recipe for all of our models with slight adjustment if needed. Our 25 predictors are: ms_zoning, lot_shape, lot_config, region, house_style, overall_qual, year_built, roof_style, exterior1st, exterior2nd, exter_qual, foundation, bsmt_qual, bsmt_exposure, bsmt_fin_type1, total_bsmt_sf, heating_qc, gr_liv_area, full_bath, kitchen_qual, fireplaces, garage_type, garage_finish, garage_cars, and sale_condition.
+
+```{r}
+ames_recipe <- recipe(sale_price ~ ., data = ames_train) %>%
+  #dummy coding nominal variables
+  step_dummy(all_nominal_predictors())%>%
+  #normalize
+  step_normalize(all_predictors()) %>%
+  step_center(all_predictors())
+#prep and bake
+prep(ames_recipe) %>% 
+  bake(new_data = ames_train) %>% 
+  head() 
+```
+
+### K-Fold Cross Validation
+
+We will stratify on the outcome, sale_price, and use 10 folds to perform stratifies cross validation.
+
+```{r}
+ames_folds <- vfold_cv(ames_train, v=10, strata = sale_price)
+```
+
+## Model Building
+
+We will use 5 models in total: linear regression, k nearest neighbor, elastic net regression, random forest, and gradient-boosted trees.
+
+1.  Setting up models
+
+```{r}
+#Linear Regression
+lm_mod <- linear_reg() %>% 
+  set_engine("lm")
+#K Nearest Neighbors
+knn_mod <- nearest_neighbor(neighbors = tune())%>%
+  set_mode("regression")%>%
+  set_engine("kknn")
+#Elastic Net
+en_reg_spec <- linear_reg(penalty = tune(),mixture = tune()) %>%
+  set_mode("regression")%>%
+  set_engine("glmnet")
+#Random Forest
+rf_reg_spec <- rand_forest(mtry = tune(), 
+                           trees = tune(), 
+                           min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("regression")
+#Gradient_Boosted Trees
+bt_reg_spec <- boost_tree(mtry = tune(), 
+                           trees = tune(), 
+                           learn_rate = tune()) %>%
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+```
+
+2.  Setting up workflows
+
+```{r}
+#Linear Regression
+lm_workflow <- workflow()%>%
+  add_model(lm_mod)%>%
+  add_recipe(ames_recipe)
+#K Nearest Neighbors
+knn_workflow <- workflow()%>%
+  add_model(knn_mod)%>%
+  add_recipe(ames_recipe)
+#Elastic Net
+en_workflow <- workflow()%>%
+  add_model(en_reg_spec)%>%
+  add_recipe(ames_recipe)
+#Random Forest
+rf_workflow <- workflow()%>%
+  add_model(rf_reg_spec)%>%
+  add_recipe(ames_recipe)
+#Gradient_Boosted Trees
+bt_workflow <- workflow()%>%
+  add_model(bt_reg_spec)%>%
+  add_recipe(ames_recipe)
+```
+
+3.  Creating tuning grids
+
+```{r}
+#K Nearest Neighbors
+knn_grid <- grid_regular(neighbors(range=c(1,10)),levels=10)
+#Elastic Net
+en_grid <- grid_regular(penalty(range = c(0,0.1),trans = identity_trans()),mixture(range = c(0, 1)),levels = 10)
+#Random Forest
+rf_grid <- grid_regular(mtry(range = c(1, 12)), 
+                        trees(range = c(200, 600)),
+                        min_n(range = c(10, 20)),
+                        levels = 8)
+#GBT
+bt_grid <- grid_regular(mtry(range = c(1, 12)), 
+                        trees(range = c(200, 600)),
+                        learn_rate(range = c(-10, -1)),
+                        levels = 5)
+bt_grid
+```
+
+4.Tuning models and saving the results
+
+```{r,eval=FALSE}
+# K Nearest Neighbors
+knn_tune <- tune_grid(
+    knn_workflow,
+    resamples = ames_folds,
+    grid = knn_grid
+)
+save(knn_tune, file = "knn_tune.rda")
+# Elastic Net
+en_tune <- tune_grid(
+  en_workflow,
+  resamples = ames_folds,
+  grid = en_grid,
+  control = control_grid(verbose = TRUE)
+)
+save(en_tune, file = "en_tune.rda")
+# Random Forest
+rf_tune_res <- tune_grid(
+  rf_workflow,
+  resamples = ames_folds,
+  grid = rf_grid,
+  control = control_grid(verbose = TRUE)
+)
+save(rf_tune_res, file = "rf_tune_res.rda")
+#GBT
+bt_tune_res <- tune_grid(
+  bt_workflow,
+  resamples = ames_folds,
+  grid = bt_grid,
+  control = control_grid(verbose = TRUE)
+)
+save(bt_tune_res, file = "bt_tune_res.rda")
+```
+
+## Model Results
+
+```{r}
+load("knn_tune.rda")
+load("en_tune.rda")
+load("rf_tune_res.rda")
+load("bt_tune_res.rda")
+#Linear Regression
+lm_res <- lm_workflow%>% fit_resamples(ames_folds)
+collect_metrics(lm_res)
+collect_metrics(knn_tune)
+show_best(knn_tune, n=1)
+collect_metrics(en_tune)
+show_best(en_tune, n=1)
+collect_metrics(rf_tune_res)
+show_best(rf_tune_res, n=1)
+collect_metrics(bt_tune_res)
+show_best(bt_tune_res, n=1)
+```
+
+The gradient-boosted tree model has the lowest rmse of 0.00467773. 
+
+
+### Elastic Net Plot
+
+```{r}
+autoplot(en_tune,metric = 'rmse')
+```
+
+For the elastic net model, smaller penalty and mixture produce better RMSE. 
+
+
+### Gradient Boosted Trees Autoplot
+
+```{r}
+autoplot(bt_tune_res,metric = 'rmse')
+```
+
+For the boosted tree model, the number of randomly selected predictors has little impact on the RMSE of the model. Also, higher number of trees and learning rate result in better RMSE.
+
+### Random Forest Autoplot
+
+```{r}
+autoplot(rf_tune_res,metric = 'rmse')
+```
+
+For the random forest model, the higher number of randomly selected predictors, the lower the RMSE. However, the number of trees and the minimal node size makes little impact on the RMSE.
+
+## Result of the Best Model
+
+Boosted Trees is our best model, and we will be fitting it to the training and testing data.
+
+```{r}
+# Fitting to the training data
+best_bt_train <- select_best(bt_tune_res, metric = 'rmse')
+bt_final_workflow_train <- finalize_workflow(bt_workflow, best_bt_train)
+bt_final_fit_train <- fit(bt_final_workflow_train, data = ames_train)
+
+# Creating the predicted vs. actual value tibble
+ames_tibble <- predict(bt_final_fit_train, new_data = ames_test %>% select(-sale_price))
+ames_tibble <- bind_cols(ames_tibble, ames_test %>% select(sale_price))
+
+ames_tibble %>% 
+  ggplot(aes(x = .pred, y = sale_price)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(lty = 2) +
+  theme_grey() +
+  coord_obs_pred() +
+  labs(title = "Predicted Values vs. Actual Values")
+```
+
+## Conclusion
+
+For the Ames data set, I used 25 predictors, 7 numeric and 18 nominal, for my recipe. I fitted linear regression, k nearest neighbors, elastic net regression, random forest, and boosted trees models to the dataset, and the boosted trees model worked the best for my recipe.
